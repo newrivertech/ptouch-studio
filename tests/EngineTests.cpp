@@ -350,6 +350,19 @@ void testWideHeadModels()
     checkNear(spec.printablePt(), 454 / 360.0 * 72.0, 0.01, "and reaches 454 dots of it");
 }
 
+void testCutterFeed()
+{
+    qunsetenv("PTOUCH_CUTTER_FEED_MM");
+    check(cutterFeedMm(QStringLiteral("PT-P710BT")) == 5, "5 mm cutter feed by default");
+    qputenv("PTOUCH_CUTTER_FEED_MM", "0");
+    check(cutterFeedMm(QStringLiteral("PT-P950NW")) == 0, "the environment can switch it off");
+    qputenv("PTOUCH_CUTTER_FEED_MM", "99");
+    check(cutterFeedMm(QString()) == 5, "a value the driver does not offer is ignored");
+    qputenv("PTOUCH_CUTTER_FEED_MM", "abc");
+    check(cutterFeedMm(QString()) == 5, "and so is one that is not a number");
+    qunsetenv("PTOUCH_CUTTER_FEED_MM");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -370,6 +383,7 @@ int main(int argc, char *argv[])
     testSnmp();
     testNetworkDevice();
     testWideHeadModels();
+    testCutterFeed();
 
     std::printf("\n%s\n", failures == 0 ? "all checks passed"
                                         : qPrintable(QStringLiteral("%1 check(s) failed").arg(failures)));

@@ -46,8 +46,8 @@ QString parseJobId(const QString &output)
 // tape is cut before the end of the label has travelled that far: the label comes
 // out shorter than calculated, and anything drawn near the end is lost. Verified
 // on a PT-P710BT — with a frame drawn to the edge, the closing line was missing
-// at 0 mm and complete at 5 mm.
-constexpr int CutterFeedMm = 5;
+// at 0 mm and complete at 5 mm. The amount comes from cutterFeedMm(): it is added
+// at both ends, so a label leaves the printer twice that much longer than laid out.
 
 // Cutting is driven by two independent driver options, and both matter:
 //
@@ -81,7 +81,7 @@ QStringList lpArguments(const Spec &spec, const PageSize &page,
             // that — we ask the printer for the tape width ourselves, before
             // every job, which is the better guard anyway.
             QStringLiteral("-o"), QStringLiteral("RequireMatchingLabelSize=False"),
-            QStringLiteral("-o"), QStringLiteral("ExtraMargin=%1mm").arg(CutterFeedMm),
+            QStringLiteral("-o"), QStringLiteral("ExtraMargin=%1mm").arg(cutterFeedMm(spec.model)),
             QStringLiteral("-o"), QStringLiteral("AutoCut=%1")
                                       .arg(cutBetween ? QStringLiteral("True")
                                                       : QStringLiteral("False")),

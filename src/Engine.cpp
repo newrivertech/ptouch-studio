@@ -78,6 +78,16 @@ const PrinterModel *modelFor(const QString &deviceName)
     return best;
 }
 
+int cutterFeedMm(const QString &model)
+{
+    bool ok = false;
+    const int fromEnv = qEnvironmentVariableIntValue("PTOUCH_CUTTER_FEED_MM", &ok);
+    if (ok && fromEnv >= 0 && fromEnv <= 27)      // the range the driver offers
+        return fromEnv;
+    Q_UNUSED(model);    // no model is known to differ yet; see docs/architecture.md
+    return DefaultCutterFeedMm;
+}
+
 const Tape *tapeFor(double widthMm)
 {
     for (const Tape &t : tapes()) {

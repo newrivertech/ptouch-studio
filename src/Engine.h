@@ -57,6 +57,13 @@ const PrinterModel *modelFor(const QString &deviceName);
 constexpr int DefaultHeadDots = 128;   // what nearly every P-touch has
 constexpr int DefaultDpi = 180;
 
+// Extra feed the driver adds at both ends of a label (its `ExtraMargin`), so the
+// end of the label has passed the cutter before the cut. It lengthens every label
+// by twice this amount beyond the calculated length. PTOUCH_CUTTER_FEED_MM
+// overrides the default, 0 to 27 mm, for trying what a given machine needs.
+constexpr int DefaultCutterFeedMm = 5;
+int cutterFeedMm(const QString &model);
+
 enum class Align { Left, Center, Right };
 
 struct Spec {
