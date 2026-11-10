@@ -8,7 +8,8 @@ namespace ptouch {
 
 struct Config {
     QString printer;                                  // CUPS queue
-    QString device = QStringLiteral("/dev/rfcomm0");  // port used for status queries
+    // Where the status is asked for: a device node, or snmp://host on the network.
+    QString device = QStringLiteral("/dev/rfcomm0");
     QString mac;                                      // Bluetooth address
     QString model;                                    // e.g. PT-P710BT
 
@@ -20,6 +21,11 @@ struct Config {
 
 // First CUPS queue that uses the ptouch driver.
 QString findPtouchQueue();
+
+// Host a queue sends its jobs to (socket://, lpd://, ipp://); empty for queues on
+// a local port.
+QString queueHost(const QString &queue);
+QString hostFromDeviceUri(const QString &uri);
 
 // Values from /etc/ptouch-studio/rfcomm.conf, written by the system setup.
 QString systemConfValue(const QString &key);

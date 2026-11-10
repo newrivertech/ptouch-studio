@@ -195,6 +195,10 @@ QStringList SetupState::missingSteps() const
             todo << QStringLiteral("fix the port permissions");
         if (!cupsBackend)
             todo << QStringLiteral("install the CUPS backend");
+    } else if (link == Link::Network) {
+        if (!deviceAccessible)
+            todo << QStringLiteral("switch the printer on and check that %1 is reachable")
+                        .arg(networkHost(device));
     } else if (!deviceAccessible) {
         todo << QStringLiteral("fix the permissions on %1").arg(device);
     }
@@ -229,8 +233,9 @@ SetupState checkSetup()
     s.mac = cfg.mac;
     s.model = cfg.model;
     // The configured device decides which half of the setup has to be in place.
-    s.link = cfg.device.startsWith(QStringLiteral("/dev/usb/")) ? Link::Usb
-                                                                : Link::Bluetooth;
+    s.link = isNetworkDevice(cfg.device) ? Link::Network
+             : cfg.device.startsWith(QStringLiteral("/dev/usb/")) ? Link::Usb
+                                                                  : Link::Bluetooth;
 
     const auto have = [](const QString &tool) {
         return !QStandardPaths::findExecutable(tool).isEmpty();
@@ -254,9 +259,14 @@ SetupState checkSetup()
     s.rfcommActive = run(QStringLiteral("systemctl"),
                          {QStringLiteral("is-active"), QStringLiteral("ptouch-rfcomm.service")})
                          .trimmed() == QStringLiteral("active");
-    s.devicePresent = QFileInfo::exists(cfg.device);
-    s.deviceAccessible = s.devicePresent
-                         && ::access(cfg.device.toLocal8Bit().constData(), R_OK | W_OK) == 0;
+    if (s.link == Link::Network) {
+        // No node and no permissions on the network: the printer answers or not.
+        s.devicePresent = s.deviceAccessible = queryStatus(cfg.device).error.isEmpty();
+    } else {
+        s.devicePresent = QFileInfo::exists(cfg.device);
+        s.deviceAccessible = s.devicePresent
+                             && ::access(cfg.device.toLocal8Bit().constData(), R_OK | W_OK) == 0;
+    }
     s.cupsBackend = QFileInfo::exists(cupsBackendDir() + QStringLiteral("/rfcomm"));
 
     if (!cfg.printer.isEmpty()) {
@@ -352,6 +362,88 @@ QList<UsbPrinter> scanUsbPrinters()
         printers << printer;
     }
     return printers;
+}
+
+NetworkPrinter probeNetworkPrinter(const QString &host)
+{
+    NetworkPrinter printer;
+    printer.host = host;
+    printer.model = networkPrinterModel(host);
+    return printer;
+}
+
+QList<NetworkPrinter> scanNetworkPrinters()
+{
+    QList<NetworkPrinter> printers;
+    // "device for NAME: uri" — one line per queue, localised wording before the name.
+    const QString out = run(QStringLiteral("lpstat"), {QStringLiteral("-v")});
+    static const QRegularExpression line(QStringLiteral("(\\S+?):\\s+(\\S+://\\S+)\\s*$"),
+                                         QRegularExpression::MultilineOption);
+    QStringList seen;
+    auto it = line.globalMatch(out);
+    while (it.hasNext()) {
+        const auto m = it.next();
+        const QString host = hostFromDeviceUri(m.captured(2));
+        if (host.isEmpty() || seen.contains(host))
+            continue;       // several queues may print to one machine
+        seen << host;
+        NetworkPrinter printer = probeNetworkPrinter(host);
+        if (printer.model.isEmpty())
+            continue;       // some other make of printer
+        printer.queue = m.captured(1);
+        printers << printer;
+    }
+
+    log::section(QStringLiteral("network scan (CUPS queues)"));
+    log::field(QStringLiteral("P-touch devices found"), QString::number(printers.size()));
+    for (const NetworkPrinter &p : std::as_const(printers))
+        log::line(QStringLiteral("  %1  %2  (queue %3)").arg(p.host, p.model, p.queue));
+    return printers;
+}
+
+int installNetwork(const QString &host, const QString &model, QString *queue,
+                   const std::function<void(const QString &)> &log)
+{
+    // A queue that already prints to this host is kept as it is — it may carry
+    // defaults somebody chose, and a second queue for one printer helps nobody.
+    for (const NetworkPrinter &known : scanNetworkPrinters()) {
+        if (known.host == host) {
+            log(QStringLiteral("queue %1 already prints to %2").arg(known.queue, host));
+            if (queue)
+                *queue = known.queue;
+            return 0;
+        }
+    }
+
+    const DriverMatch driver = findDriver(model);
+    if (driver.ppd.isEmpty()) {
+        log(QStringLiteral("No P-touch driver found — please install printer-driver-ptouch "
+                           "(or ptouch-driver)."));
+        return 2;
+    }
+
+    const QString name = queue && !queue->isEmpty() ? *queue : QString::fromLatin1(DefaultQueue);
+    log(QStringLiteral("queue %1 using %2").arg(name, driver.ppd));
+    int code = 0;
+    const QString lpadmin = run(
+        QStringLiteral("lpadmin"),
+        {QStringLiteral("-p"), name, QStringLiteral("-E"),
+         QStringLiteral("-v"), QStringLiteral("socket://%1:9100").arg(host),
+         QStringLiteral("-m"), driver.ppd,
+         QStringLiteral("-D"), QStringLiteral("Brother %1 (network)")
+                                   .arg(model.isEmpty() ? QStringLiteral("P-touch") : model),
+         QStringLiteral("-L"), host}, &code);
+    if (code != 0) {
+        log(QStringLiteral("  lpadmin: %1").arg(lpadmin.trimmed()));
+        log(QStringLiteral("  If this account may not administer CUPS, run the setup with sudo."));
+        return 3;
+    }
+    run(QStringLiteral("cupsenable"), {name});
+    run(QStringLiteral("cupsaccept"), {name});
+    if (queue)
+        *queue = name;
+    log(QStringLiteral("Done — no pairing, RFCOMM service or custom backend needed on the network."));
+    return 0;
 }
 
 int installSystemUsb(const QString &uri, const QString &model, const QString &queue,

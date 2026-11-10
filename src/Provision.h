@@ -19,8 +19,10 @@ struct Device {
 };
 
 // How the printer is attached. USB needs no pairing, no RFCOMM service and no
-// custom CUPS backend — the kernel and CUPS' own usb backend do that work.
-enum class Link { Bluetooth, Usb };
+// custom CUPS backend — the kernel and CUPS' own usb backend do that work. On the
+// network CUPS' socket backend carries the job and SNMP the status; nothing needs
+// root at all.
+enum class Link { Bluetooth, Usb, Network };
 
 struct UsbPrinter {
     QString uri;        // usb://Brother/PT-P710BT?serial=...
@@ -30,6 +32,19 @@ struct UsbPrinter {
 
 // Brother label printers currently plugged in.
 QList<UsbPrinter> scanUsbPrinters();
+
+struct NetworkPrinter {
+    QString host;
+    QString model;      // PT-P950NW
+    QString queue;      // CUPS queue already printing to it, if any
+};
+
+// P-touch printers CUPS already has a network queue for. There is no discovery
+// beyond that: a printer nobody has a queue for is named with `setup --host`.
+QList<NetworkPrinter> scanNetworkPrinters();
+
+// The P-touch answering at `host`; model empty when there is none.
+NetworkPrinter probeNetworkPrinter(const QString &host);
 
 struct SetupState {
     bool haveBluetoothctl = false;
@@ -52,13 +67,17 @@ struct SetupState {
     QString model;
 
     bool dependenciesOk() const {
+        // bluez is only needed for the Bluetooth link.
+        if (link == Link::Network)
+            return haveLp && haveDriver;
         return haveBluetoothctl && haveRfcomm && haveLp && haveDriver;
     }
     bool ready() const {
         if (!dependenciesOk() || !deviceAccessible || !queuePresent)
             return false;
-        // Over USB the kernel provides the device and CUPS the transport.
-        if (link == Link::Usb)
+        // Over USB the kernel provides the device and CUPS the transport; on the
+        // network CUPS does both.
+        if (link != Link::Bluetooth)
             return true;
         return paired && rfcommActive && cupsBackend;
     }
@@ -87,6 +106,12 @@ int installSystem(const QString &mac, const QString &model, const QString &queue
 int installSystemUsb(const QString &uri, const QString &model, const QString &queue,
                      const QString &owner,
                      const std::function<void(const QString &)> &log);
+
+// Network counterpart: only a CUPS queue on socket://host:9100. Reuses the queue
+// that already prints to the host if there is one and reports its name through
+// `queue`. Needs no root where the user may administer CUPS.
+int installNetwork(const QString &host, const QString &model, QString *queue,
+                   const std::function<void(const QString &)> &log);
 
 // Command lines the interface uses to trigger the system part through pkexec.
 QStringList systemSetupCommand(const QString &mac, const QString &model,

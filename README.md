@@ -151,6 +151,9 @@ ptouch-studio status --json                # for scripts
 ## Supported devices
 
 Developed and verified with the **PT-P710BT** (P-touch Cube Plus) over Bluetooth.
+The network link was verified with a **PT-P950NW** over Ethernet, 24 and 36 mm tape:
+`ptouch-studio setup --host <address>`, or nothing at all if CUPS already has a
+queue for the printer.
 
 In principle every P-touch model works that
 [printer-driver-ptouch](https://github.com/philpem/printer-driver-ptouch) supports

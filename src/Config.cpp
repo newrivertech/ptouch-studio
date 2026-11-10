@@ -10,6 +10,7 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTextStream>
+#include <QUrl>
 
 namespace ptouch {
 namespace {
@@ -67,6 +68,24 @@ QString findPtouchQueue()
     return queues.value(0);
 }
 
+QString hostFromDeviceUri(const QString &uri)
+{
+    const QUrl url(uri.trimmed());
+    static const QStringList schemes = {QStringLiteral("socket"), QStringLiteral("lpd"),
+                                        QStringLiteral("ipp"), QStringLiteral("ipps"),
+                                        QStringLiteral("http"), QStringLiteral("https")};
+    return schemes.contains(url.scheme().toLower()) ? url.host() : QString();
+}
+
+QString queueHost(const QString &queue)
+{
+    if (queue.isEmpty())
+        return {};
+    // "device for NAME: socket://192.168.1.50:9100" — the URI is the last word.
+    const QString out = runCommand(QStringLiteral("lpstat"), {QStringLiteral("-v"), queue});
+    return hostFromDeviceUri(out.section(QLatin1Char(' '), -1));
+}
+
 Config Config::load()
 {
     Config c;
@@ -99,11 +118,28 @@ Config Config::load()
 
     // USB device numbers move when the printer is replugged or restarted, so a
     // stale path in the configuration should not stop us finding the machine.
-    if (!QFileInfo::exists(c.device)) {
-        const QList<Port> ports = candidatePorts();
-        if (!ports.isEmpty())
-            c.device = ports.first().path;
+    if (!isNetworkDevice(c.device) && !QFileInfo::exists(c.device)) {
+        // Ask for the status over the link the jobs travel on. A queue that prints
+        // to a host belongs to a printer on the network, and that printer answers
+        // over SNMP — even if the same machine is plugged in over USB as well, where
+        // its node may not be accessible. Asking for the model first keeps other
+        // makes of network printer out of it.
+        const QString host = queueHost(c.printer);
+        const QString model = host.isEmpty() ? QString() : networkPrinterModel(host);
+        if (!model.isEmpty()) {
+            c.device = networkDevice(host);
+            if (c.model.isEmpty())
+                c.model = model;
+        } else {
+            const QList<Port> ports = candidatePorts();
+            if (!ports.isEmpty())
+                c.device = ports.first().path;
+        }
     }
+    // The model decides how much of the tape the head reaches; on the network it
+    // is one question away.
+    if (c.model.isEmpty() && isNetworkDevice(c.device))
+        c.model = networkPrinterModel(networkHost(c.device));
     return c;
 }
 

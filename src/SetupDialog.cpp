@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "Log.h"
+#include "Status.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -112,16 +113,21 @@ SetupDialog::Choice SetupDialog::currentChoice() const
     const int index = m_deviceBox->currentIndex();
     if (index < 0)
         return {};
-    // USB entries come first in the list.
+    // USB entries come first in the list, then the network, then Bluetooth.
     if (index < m_usbPrinters.size()) {
         const UsbPrinter &p = m_usbPrinters.at(index);
-        return {true, QString(), p.uri, p.model, p.devicePath};
+        return {true, QString(), p.uri, p.model, p.devicePath, QString()};
     }
-    const int bluetooth = index - m_usbPrinters.size();
+    const int network = index - m_usbPrinters.size();
+    if (network < m_networkPrinters.size()) {
+        const NetworkPrinter &p = m_networkPrinters.at(network);
+        return {false, QString(), QString(), p.model, QString(), p.host};
+    }
+    const int bluetooth = network - m_networkPrinters.size();
     if (bluetooth >= m_devices.size())
         return {};
     const Device &d = m_devices.at(bluetooth);
-    return {false, d.mac, QString(), d.model, QString()};
+    return {false, d.mac, QString(), d.model, QString(), QString()};
 }
 
 void SetupDialog::appendLog(const QString &line)
@@ -172,14 +178,21 @@ void SetupDialog::updateView()
     }
 
     QStringList lines;
-    lines << tr("%1 system tools (bluez, cups, ptouch driver)")
-                 .arg(mark(m_state.dependenciesOk()));
-    lines << tr("%1 printer paired%2").arg(mark(m_state.paired),
-              m_state.mac.isEmpty() ? QString() : tr(" (%1)").arg(m_state.mac));
-    lines << tr("%1 RFCOMM service running").arg(mark(m_state.rfcommActive));
-    lines << tr("%1 access to %2").arg(mark(m_state.deviceAccessible),
-                                                   m_state.device);
-    lines << tr("%1 CUPS backend installed").arg(mark(m_state.cupsBackend));
+    if (m_state.link == Link::Network) {
+        // Pairing, RFCOMM and the custom backend do not exist on this link.
+        lines << tr("%1 system tools (cups, ptouch driver)").arg(mark(m_state.dependenciesOk()));
+        lines << tr("%1 printer answers at %2").arg(mark(m_state.deviceAccessible),
+                                                    networkHost(m_state.device));
+    } else {
+        lines << tr("%1 system tools (bluez, cups, ptouch driver)")
+                     .arg(mark(m_state.dependenciesOk()));
+        lines << tr("%1 printer paired%2").arg(mark(m_state.paired),
+                  m_state.mac.isEmpty() ? QString() : tr(" (%1)").arg(m_state.mac));
+        lines << tr("%1 RFCOMM service running").arg(mark(m_state.rfcommActive));
+        lines << tr("%1 access to %2").arg(mark(m_state.deviceAccessible),
+                                                       m_state.device);
+        lines << tr("%1 CUPS backend installed").arg(mark(m_state.cupsBackend));
+    }
     lines << tr("%1 print queue %2").arg(mark(m_state.queuePresent),
               m_state.queue.isEmpty() ? tr("—") : m_state.queue);
 
@@ -205,13 +218,20 @@ void SetupDialog::scan()
         appendLog(tr("found on USB: %1 (%2)").arg(p.model, p.devicePath));
     }
 
+    // Network printers are known through the CUPS queues that print to them.
+    m_networkPrinters = scanNetworkPrinters();
+    for (const NetworkPrinter &p : std::as_const(m_networkPrinters)) {
+        m_deviceBox->addItem(tr("Network — %1 (%2)").arg(p.model, p.host), p.host);
+        appendLog(tr("found on the network: %1 at %2 (queue %3)").arg(p.model, p.host, p.queue));
+    }
+
     m_devices = scanForPrinters(12);
     for (const Device &d : std::as_const(m_devices)) {
         m_deviceBox->addItem(tr("Bluetooth — %1 (%2)").arg(d.name, d.mac), d.mac);
         appendLog(tr("found on Bluetooth: %1 (%2)").arg(d.name, d.mac));
     }
 
-    if (m_devices.isEmpty() && m_usbPrinters.isEmpty())
+    if (m_devices.isEmpty() && m_usbPrinters.isEmpty() && m_networkPrinters.isEmpty())
         appendLog(QStringLiteral("No P-touch found. Switch the printer on, plug it in or "
                                  "bring it into range."));
     setWorking(false);
@@ -225,6 +245,10 @@ void SetupDialog::pair()
         return;
     if (choice.usb) {
         appendLog(tr("A USB printer needs no pairing — go straight to step 2."));
+        return;
+    }
+    if (choice.network()) {
+        appendLog(tr("A network printer needs no pairing — go straight to step 2."));
         return;
     }
     const Device device{choice.mac, QString(), choice.model};
@@ -253,9 +277,29 @@ void SetupDialog::runSystemSetup()
     Config cfg = Config::load();
     Choice choice = currentChoice();
     if (!choice.valid() && !cfg.mac.isEmpty())
-        choice = {false, cfg.mac, QString(), cfg.model, QString()};
+        choice = {false, cfg.mac, QString(), cfg.model, QString(), QString()};
     if (!choice.valid()) {
         appendLog(tr("Search for a printer first."));
+        return;
+    }
+
+    // Nothing on the network link needs root: a CUPS queue is all there is to it.
+    if (choice.network()) {
+        setWorking(true, tr("Setting up the print queue …"));
+        QString queue = cfg.printer;
+        const int code = installNetwork(choice.host, choice.model, &queue,
+                                        [this](const QString &line) { appendLog(line); });
+        if (code == 0) {
+            cfg.printer = queue;
+            cfg.model = choice.model;
+            cfg.device = networkDevice(choice.host);
+            cfg.save();
+            appendLog(tr("Setup complete."));
+        } else {
+            appendLog(tr("Setup failed (code %1).").arg(code));
+        }
+        setWorking(false);
+        recheck();
         return;
     }
 

@@ -58,7 +58,10 @@ const QList<PrinterModel> &printerModels()
         {QStringLiteral("PT-P700"), 128, 180},
         {QStringLiteral("PT-P710BT"), 128, 180},
         {QStringLiteral("PT-P750W"), 128, 180},
+        {QStringLiteral("PT-P900W"), 560, 360},
         {QStringLiteral("PT-P900Wc"), 560, 360},
+        {QStringLiteral("PT-P910BT"), 560, 360},
+        {QStringLiteral("PT-P950NW"), 560, 360},
     };
     return list;
 }

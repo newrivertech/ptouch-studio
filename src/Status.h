@@ -1,8 +1,9 @@
-// Reading the printer status over the RFCOMM port — costs no tape.
+// Reading the printer status — costs no tape.
 //
 // A P-touch replies to `ESC i S` with 32 status bytes; byte 10 holds the width of
 // the inserted tape in millimetres. Documented in Brother's "Raster Command
-// Reference" for the PT-P700 series.
+// Reference" for the PT-P700 series. Over Bluetooth and USB that dialogue runs on
+// the device node; a printer on the network publishes the same 32 bytes over SNMP.
 #pragma once
 
 #include <QObject>
@@ -31,6 +32,16 @@ struct Status {
 
 constexpr int StatusLength = 32;
 
+// A printer on the network is written as `snmp://host` wherever a device node is
+// expected, so configuration, command line and status polling need no second path.
+bool isNetworkDevice(const QString &device);
+QString networkDevice(const QString &host);   // snmp://host
+QString networkHost(const QString &device);   // host, empty for a device node
+
+// Model of the P-touch answering at `host` ("PT-P950NW"); empty when nothing
+// answers or the device there is not a Brother P-touch.
+QString networkPrinterModel(const QString &host);
+
 // One attempt; opening the port is what establishes the Bluetooth connection.
 Status queryStatus(const QString &device, int timeoutMs = 4000);
 
@@ -41,7 +52,7 @@ Status decodeStatus(const QByteArray &data);
 
 // A character device that speaks the P-touch protocol.
 struct Port {
-    QString path;     // /dev/usb/lp0 or /dev/rfcomm0
+    QString path;     // /dev/usb/lp0, /dev/rfcomm0 or snmp://host
     QString model;    // from the USB device ID, empty over Bluetooth
     bool usb = false;
 };

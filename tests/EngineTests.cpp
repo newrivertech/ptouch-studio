@@ -4,7 +4,9 @@
 // the coordinate system on top of that (600 dpi PDF) makes the text come out DPI/72
 // too large while every other measurement looks right. So this does not merely do
 // arithmetic — it rasterises the produced PDF and measures the ink.
+#include "Config.h"
 #include "Engine.h"
+#include "Snmp.h"
 #include "Status.h"
 
 #include <QGuiApplication>
@@ -276,6 +278,78 @@ void testStatusDecoding()
     check(!s.error.isEmpty(), "a short reply is rejected");
 }
 
+
+// Request and replies as they went over the wire to a PT-P950NW with 36 mm tape.
+void testSnmp()
+{
+    const QString statusOid = QStringLiteral("1.3.6.1.4.1.2435.3.3.9.1.6.1.0");
+    const QByteArray request = snmp::encodeGetRequest(statusOid, 0x12345678);
+    check(request.toHex() == "302f02010004067075626c6963a02202041234567802010002010030143012"
+                             "060e2b060104019303030309010601000500",
+          "SNMP GET request is encoded byte for byte");
+    check(snmp::encodeGetRequest(QStringLiteral("not.an.oid"), 1).isEmpty(),
+          "an invalid OID is refused");
+
+    const QByteArray statusReply = QByteArray::fromHex(
+        "304f02010004067075626c6963a24202041234567802010002010030343032060e2b06010401"
+        "93030303090106010004208020423070300400000024010000000000000000000000000108"
+        "000000000000");
+    snmp::Reply r = snmp::decodeResponse(statusReply);
+    check(r.ok && r.requestId == 0x12345678, "SNMP reply decoded, request id recovered");
+    check(r.tag == snmp::TagOctetString && r.value.size() == StatusLength,
+          "the status value is the 32 byte block");
+    const Status s = decodeStatus(r.value);
+    check(s.ok && s.tapeMm == 36, "status over SNMP: ready, 36 mm tape");
+
+    // noSuchName — what any device other than a P-touch says to the status OID.
+    r = snmp::decodeResponse(QByteArray::fromHex(
+        "302c02010004067075626c6963a21f0204123456780201020201013011300f060b2b0601040193"
+        "03090909000500"));
+    check(!r.ok && !r.error.isEmpty() && r.requestId == 0x12345678,
+          "an SNMP error status is reported, not mistaken for a value");
+
+    check(!snmp::decodeResponse(statusReply.left(40)).ok, "a truncated reply is rejected");
+    check(!snmp::decodeResponse(QByteArray("garbage")).ok, "garbage is rejected");
+}
+
+void testNetworkDevice()
+{
+    check(isNetworkDevice(QStringLiteral("snmp://192.168.1.50")), "snmp://host is a network device");
+    check(!isNetworkDevice(QStringLiteral("/dev/rfcomm0")), "a device node is not");
+    check(!isNetworkDevice(QStringLiteral("snmp://")), "a scheme without a host is not");
+    check(networkHost(networkDevice(QStringLiteral("labels.lan"))) == QStringLiteral("labels.lan"),
+          "host survives the round trip");
+    check(networkHost(QStringLiteral("/dev/usb/lp0")).isEmpty(), "a device node has no host");
+
+    // What a CUPS queue prints to decides whether the printer is on the network.
+    check(hostFromDeviceUri(QStringLiteral("socket://192.168.1.50:9100")) == QStringLiteral("192.168.1.50"),
+          "host taken from a socket:// queue");
+    check(hostFromDeviceUri(QStringLiteral("lpd://labels.lan/queue\n")) == QStringLiteral("labels.lan"),
+          "host taken from an lpd:// queue");
+    check(hostFromDeviceUri(QStringLiteral("usb://Brother/PT-P710BT?serial=1")).isEmpty(),
+          "a USB queue has no host");
+    check(hostFromDeviceUri(QStringLiteral("rfcomm:/dev/rfcomm0")).isEmpty(),
+          "neither has the Bluetooth backend");
+}
+
+void testWideHeadModels()
+{
+    // The PT-P900 series has a 560 dot head at 360 dpi, the only one that reaches
+    // across a 36 mm tape. Without the model a 128 dot head is assumed and the
+    // page is clamped to 18 mm.
+    for (const QString &name : {QStringLiteral("PT-P900W"), QStringLiteral("PT-P950NW"),
+                                QStringLiteral("PT-P910BT")}) {
+        const PrinterModel *m = modelFor(name);
+        check(m && m->headDots == 560 && m->dpi == 360,
+              QStringLiteral("%1 is known with its 560 dot head").arg(name));
+    }
+    Spec spec;
+    spec.tapeMm = 36.0;
+    spec.model = QStringLiteral("PT-P950NW");
+    checkNear(spec.pagePt(), 102.0, 0.01, "PT-P950NW prints a 36 mm tape on a 102 pt page");
+    checkNear(spec.printablePt(), 454 / 360.0 * 72.0, 0.01, "and reaches 454 dots of it");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -293,6 +367,9 @@ int main(int argc, char *argv[])
     testGlyphDetection();
     testArtwork();
     testStatusDecoding();
+    testSnmp();
+    testNetworkDevice();
+    testWideHeadModels();
 
     std::printf("\n%s\n", failures == 0 ? "all checks passed"
                                         : qPrintable(QStringLiteral("%1 check(s) failed").arg(failures)));

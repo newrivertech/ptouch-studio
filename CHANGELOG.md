@@ -8,6 +8,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Network printers. A P-touch on the LAN or Wi-Fi (PT-P950NW, PT-P900W, PT-P750W …)
+  is asked for its tape and state over SNMP, where it publishes the same 32 status
+  bytes it returns over Bluetooth and USB; jobs travel through CUPS' own `socket`
+  backend. A queue that already prints to such a printer is picked up without any
+  setup, `ptouch-studio setup --host <address>` creates one, and neither needs
+  root, pairing, the RFCOMM service or the custom backend. The status port is
+  written `snmp://host` wherever a device node was expected.
+- The PT-P900W, PT-P910BT and PT-P950NW with their 560 dot, 360 dpi head — the
+  only one that reaches across a 36 mm tape.
 - Diagnostics report for bug reports: "Help → Save diagnostics report …" in the
   interface, or `ptouch-studio diagnostics [file]` on the command line. It bundles
   build and system details, the print queue and its PPD, the available P-touch

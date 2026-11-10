@@ -32,6 +32,7 @@ endif()
 add_library(ptouch-core STATIC
     src/Engine.cpp
     src/Graphics.cpp
+    src/Snmp.cpp
     src/Status.cpp
     src/Config.cpp
     src/Printer.cpp

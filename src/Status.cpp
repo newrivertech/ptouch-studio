@@ -1,6 +1,7 @@
 #include "Status.h"
 
 #include "Log.h"
+#include "Snmp.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -11,10 +12,13 @@
 #include <QElapsedTimer>
 #include <QMap>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <netdb.h>
 #include <poll.h>
+#include <sys/socket.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -90,7 +94,97 @@ void logStatus(const QString &device, const QByteArray &raw, const Status &s)
                             : QStringLiteral("  [%1]").arg(QString::fromLatin1(raw.toHex(' ')))));
 }
 
+// The 32 status bytes, exactly as `ESC i S` returns them on a device node.
+const QString StatusOid = QStringLiteral("1.3.6.1.4.1.2435.3.3.9.1.6.1.0");
+// IEEE 1284 device ID, the string USB printers expose through sysfs.
+const QString DeviceIdOid = QStringLiteral("1.3.6.1.4.1.2435.2.3.9.1.1.7.0");
+
+const QString NetworkScheme = QStringLiteral("snmp://");
+
+// "MFG:Brother;MDL:PT-P710BT;..." -> "PT-P710BT"; empty unless it is a Brother.
+QString modelFromDeviceId(const QString &id)
+{
+    if (!id.contains(QStringLiteral("Brother"), Qt::CaseInsensitive))
+        return {};
+    static const QRegularExpression model(
+        QStringLiteral("(?:MDL|MODEL):\\s*([^;]+)"), QRegularExpression::CaseInsensitiveOption);
+    const auto m = model.match(id);
+    return m.hasMatch() ? m.captured(1).trimmed() : QString();
+}
+
+Status queryStatusNetwork(const QString &device, int timeoutMs)
+{
+    Status s;
+    const QString host = networkHost(device);
+    const snmp::Reply reply = snmp::get(host, StatusOid, std::min(timeoutMs, 1500));
+    if (!reply.ok) {
+        s.error = reply.requestId != 0
+                      ? QStringLiteral("%1 answers, but not as a P-touch (%2)").arg(host, reply.error)
+                      : QStringLiteral("%1 — printer switched on and on the network?")
+                            .arg(reply.error);
+        logStatus(device, {}, s);
+        return s;
+    }
+    const Status decoded = decodeStatus(reply.value);
+    logStatus(device, reply.value, decoded);
+    return decoded;
+}
+
+// Print data port of a network P-touch; the only place ESC @ can be sent to.
+bool sendToRawPort(const QString &host, const QByteArray &data, QString *error)
+{
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo *addresses = nullptr;
+    const int rc = ::getaddrinfo(host.toLocal8Bit().constData(), "9100", &hints, &addresses);
+    if (rc != 0 || !addresses) {
+        if (error)
+            *error = QStringLiteral("%1: %2").arg(host, QString::fromLocal8Bit(::gai_strerror(rc)));
+        return false;
+    }
+    const int fd = ::socket(addresses->ai_family, addresses->ai_socktype, addresses->ai_protocol);
+    timeval timeout{5, 0};
+    bool ok = fd >= 0;
+    if (ok) {
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+        ok = ::connect(fd, addresses->ai_addr, addresses->ai_addrlen) == 0
+             && ::send(fd, data.constData(), size_t(data.size()), MSG_NOSIGNAL) == data.size();
+    }
+    if (!ok && error)
+        *error = QStringLiteral("%1 port 9100: %2").arg(host,
+                     QString::fromLocal8Bit(std::strerror(errno)));
+    if (fd >= 0)
+        ::close(fd);
+    ::freeaddrinfo(addresses);
+    return ok;
+}
+
 } // namespace
+
+bool isNetworkDevice(const QString &device)
+{
+    return device.startsWith(NetworkScheme, Qt::CaseInsensitive)
+           && device.size() > NetworkScheme.size();
+}
+
+QString networkDevice(const QString &host)
+{
+    return NetworkScheme + host;
+}
+
+QString networkHost(const QString &device)
+{
+    return isNetworkDevice(device) ? device.mid(NetworkScheme.size()) : QString();
+}
+
+QString networkPrinterModel(const QString &host)
+{
+    const snmp::Reply reply = snmp::get(host, DeviceIdOid);
+    if (!reply.ok || reply.tag != snmp::TagOctetString)
+        return {};
+    return modelFromDeviceId(QString::fromLatin1(reply.value));
+}
 
 Status decodeStatus(const QByteArray &d)
 {
@@ -120,6 +214,9 @@ Status decodeStatus(const QByteArray &d)
 
 Status queryStatus(const QString &device, int timeoutMs)
 {
+    if (isNetworkDevice(device))
+        return queryStatusNetwork(device, timeoutMs);
+
     Status s;
     const QByteArray path = device.toLocal8Bit();
 
@@ -212,6 +309,8 @@ Status queryStatusRetry(const QString &device, int attempts)
         if (s.error.contains(QStringLiteral("no access"))
             || s.error.contains(QStringLiteral("is missing")))
             return s;                       // setup problem: retrying will not help
+        if (isNetworkDevice(device))
+            return s;                       // the SNMP request already asked twice
         QThread::msleep(1000);
     }
     return s;
@@ -225,20 +324,18 @@ QString usbPrinterModel(const QString &node)
     QFile id(QStringLiteral("/sys/class/usbmisc/%1/device/ieee1284_id").arg(node));
     if (!id.open(QIODevice::ReadOnly | QIODevice::Text))
         return {};
-    const QString text = QString::fromLatin1(id.readAll());
-    if (!text.contains(QStringLiteral("Brother"), Qt::CaseInsensitive))
-        return {};
-
-    static const QRegularExpression model(
-        QStringLiteral("(?:MDL|MODEL):\\s*([^;]+)"), QRegularExpression::CaseInsensitiveOption);
-    const auto m = model.match(text);
-    return m.hasMatch() ? m.captured(1).trimmed() : QString();
+    return modelFromDeviceId(QString::fromLatin1(id.readAll()));
 }
 
 bool resetPrinter(const QString &device, QString *error)
 {
     // ESC @ clears the buffer and the error state. That is all a P-touch offers
     // as a remote reset — it cannot be power-cycled over the wire.
+    if (isNetworkDevice(device)) {
+        const char init[] = {0x1b, 0x40};
+        return sendToRawPort(networkHost(device),
+                             QByteArray(100, '\0') + QByteArray(init, sizeof(init)), error);
+    }
     const int fd = ::open(device.toLocal8Bit().constData(), O_RDWR | O_NOCTTY);
     if (fd < 0) {
         if (error)

@@ -35,7 +35,9 @@ private:
         QString uri;        // USB
         QString model;
         QString device;     // /dev/usb/lpN, USB only
-        bool valid() const { return usb ? !uri.isEmpty() : !mac.isEmpty(); }
+        QString host;       // network
+        bool network() const { return !host.isEmpty(); }
+        bool valid() const { return network() || (usb ? !uri.isEmpty() : !mac.isEmpty()); }
     };
     Choice currentChoice() const;
 
@@ -53,6 +55,7 @@ private:
     SetupState m_state;
     QList<Device> m_devices;
     QList<UsbPrinter> m_usbPrinters;
+    QList<NetworkPrinter> m_networkPrinters;
 
     QLabel *m_summary = nullptr;
     QLabel *m_steps = nullptr;

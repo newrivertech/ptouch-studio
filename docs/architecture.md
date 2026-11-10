@@ -5,7 +5,8 @@
 | File | Purpose |
 |---|---|
 | `src/Engine.*` | tape table, text layout, drawing, PDF output |
-| `src/Status.*` | status query over RFCOMM, decoding of the 32 status bytes |
+| `src/Status.*` | status query over RFCOMM, USB or the network, decoding of the 32 status bytes |
+| `src/Snmp.*` | one SNMPv1 GET, encoded and decoded by hand |
 | `src/Printer.*` | handing jobs to CUPS and following them to the end |
 | `src/Provision.*` | setup: pairing, port, backend, print queue |
 | `src/Config.*` | configuration from environment, user and system files |
@@ -100,6 +101,29 @@ CUPS backend, because CUPS' own `usb` backend does the transport. It is also far
 quicker — a label that takes 23 seconds over Bluetooth is through in under a
 second — and the printer cannot fall asleep mid-job. What both need is a udev
 rule, since the kernel hands printer nodes to group `lp` alone.
+
+## A third link: the network
+
+Network models take print data on TCP port 9100 and CUPS' `socket` backend
+delivers it, so a queue is all the setup there is. What does not work there is the
+status dialogue: a PT-P950NW stays silent when sent `ESC i S` on port 9100. It
+publishes the same 32 bytes over SNMP instead, at
+`1.3.6.1.4.1.2435.3.3.9.1.6.1.0`, and its IEEE 1284 device ID — the string USB
+exposes through sysfs — at `1.3.6.1.4.1.2435.2.3.9.1.1.7.0`.
+
+`src/Snmp.cpp` sends that one GET and takes the reply apart by hand; a dependency
+on net-snmp for a 49 byte datagram would be out of proportion. The printer is
+written `snmp://host` wherever a device node is expected, so `queryStatus()`,
+the configuration and the status worker need no second code path.
+
+`Config::load()` follows the queue: when it prints to a host and a P-touch answers
+there, that is where the status is asked for — even if the same machine is plugged
+in over USB as well. Asking for the model first keeps other makes of network
+printer out of it; to the status OID they answer `noSuchName`.
+
+Verified on a PT-P950NW with 24 and 36 mm tape over Ethernet. Not yet handled:
+the job counts as printed when CUPS has delivered it, while the printer is still
+feeding and cutting — the wait the `rfcomm:` backend does is missing on this link.
 
 ## The cutter sits behind the print head
 

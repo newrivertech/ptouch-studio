@@ -51,7 +51,8 @@ int cmdStatus(const QStringList &args)
     p.addOption({{QStringLiteral("j"), QStringLiteral("json")},
                  QStringLiteral("print as JSON")});
     p.addOption({{QStringLiteral("d"), QStringLiteral("device")},
-                 QStringLiteral("RFCOMM port"), QStringLiteral("path")});
+                 QStringLiteral("port to ask: a device node or snmp://host"),
+                 QStringLiteral("path")});
     p.addHelpOption();
     p.process(args);
 
@@ -281,11 +282,17 @@ int cmdCheck()
     const SetupState s = checkSetup();
     const auto mark = [](bool ok) { return ok ? QStringLiteral("✓") : QStringLiteral("✗"); };
     out() << mark(s.dependenciesOk()) << QStringLiteral(" system tools") << Qt::endl;
-    out() << mark(s.paired) << QStringLiteral(" printer paired %1").arg(s.mac) << Qt::endl;
-    out() << mark(s.rfcommActive) << QStringLiteral(" RFCOMM service") << Qt::endl;
-    out() << mark(s.deviceAccessible) << QStringLiteral(" access to %1").arg(s.device)
-          << Qt::endl;
-    out() << mark(s.cupsBackend) << QStringLiteral(" CUPS backend") << Qt::endl;
+    if (s.link == Link::Network) {
+        // Pairing, RFCOMM and the custom backend do not exist on this link.
+        out() << mark(s.deviceAccessible)
+              << QStringLiteral(" printer answers at %1").arg(networkHost(s.device)) << Qt::endl;
+    } else {
+        out() << mark(s.paired) << QStringLiteral(" printer paired %1").arg(s.mac) << Qt::endl;
+        out() << mark(s.rfcommActive) << QStringLiteral(" RFCOMM service") << Qt::endl;
+        out() << mark(s.deviceAccessible) << QStringLiteral(" access to %1").arg(s.device)
+              << Qt::endl;
+        out() << mark(s.cupsBackend) << QStringLiteral(" CUPS backend") << Qt::endl;
+    }
     out() << mark(s.queuePresent) << QStringLiteral(" print queue %1").arg(s.queue)
           << Qt::endl;
     const QStringList todo = s.missingSteps();
@@ -331,12 +338,18 @@ int cmdScan()
         out() << QStringLiteral("           %1").arg(p.uri) << Qt::endl;
     }
 
+    // Network printers are known through their CUPS queues, which is quick too.
+    const QList<NetworkPrinter> network = scanNetworkPrinters();
+    for (const NetworkPrinter &p : network)
+        out() << QStringLiteral("Network    %1  %2  (queue %3)").arg(p.model, p.host, p.queue)
+              << Qt::endl;
+
     out() << QStringLiteral("Bluetooth  searching (12 s) …") << Qt::endl;
     const QList<Device> devices = scanForPrinters(12);
     for (const Device &d : devices)
         out() << QStringLiteral("Bluetooth  %1  %2").arg(d.mac, d.name) << Qt::endl;
 
-    if (devices.isEmpty() && usb.isEmpty()) {
+    if (devices.isEmpty() && usb.isEmpty() && network.isEmpty()) {
         err() << QStringLiteral("No P-touch found.") << Qt::endl;
         return 1;
     }
@@ -350,6 +363,9 @@ int cmdSetup(const QStringList &args)
                  QStringLiteral("address")});
     p.addOption({QStringLiteral("queue"), QStringLiteral("name of the print queue"),
                  QStringLiteral("name"), QString::fromLatin1(DefaultQueue)});
+    p.addOption({QStringLiteral("host"),
+                 QStringLiteral("printer on the network, by name or address"),
+                 QStringLiteral("host")});
     p.addOption({QStringLiteral("bluetooth"),
                  QStringLiteral("use Bluetooth even if a USB printer is present")});
     p.addHelpOption();
@@ -358,6 +374,36 @@ int cmdSetup(const QStringList &args)
     Config cfg = Config::load();
     QString mac = p.value(QStringLiteral("mac"));
     QString model = cfg.model;
+
+    // A printer on the network is named, not searched for, and needs nothing but
+    // a CUPS queue — no pairing, no service, no udev rule, usually no root.
+    if (p.isSet(QStringLiteral("host"))) {
+        const QString host = p.value(QStringLiteral("host"));
+        const NetworkPrinter printer = probeNetworkPrinter(host);
+        if (printer.model.isEmpty()) {
+            err() << QStringLiteral("No P-touch answers at %1 (SNMP, UDP port 161). Is it "
+                                    "switched on, and is SNMP enabled in its web interface?")
+                         .arg(host) << Qt::endl;
+            return 1;
+        }
+        out() << QStringLiteral("Found on the network: %1 at %2").arg(printer.model, host)
+              << Qt::endl;
+
+        QString queue = p.value(QStringLiteral("queue"));
+        const int code = installNetwork(host, printer.model, &queue, [](const QString &line) {
+            out() << line << Qt::endl;
+        });
+        if (code != 0)
+            return code;
+
+        cfg.printer = queue;
+        cfg.model = printer.model;
+        cfg.device = networkDevice(host);
+        cfg.save();
+        out() << QStringLiteral("Configuration saved: %1").arg(Config::configFilePath())
+              << Qt::endl;
+        return cmdCheck();
+    }
 
     // A printer on USB is the simpler and faster path — no pairing, no RFCOMM
     // service, no custom backend. Prefer it when one is plugged in.
