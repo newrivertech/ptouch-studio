@@ -84,7 +84,12 @@ int cutterFeedMm(const QString &model)
     const int fromEnv = qEnvironmentVariableIntValue("PTOUCH_CUTTER_FEED_MM", &ok);
     if (ok && fromEnv >= 0 && fromEnv <= 27)      // the range the driver offers
         return fromEnv;
-    Q_UNUSED(model);    // no model is known to differ yet; see docs/architecture.md
+    // The PT-P900 series feeds the label past its cutter by itself: framed labels
+    // printed on a PT-P950NW with no extra margin came out complete and exactly as
+    // long as laid out (60 and 50 mm). Adding 5 mm there only wastes 10 mm a label.
+    const PrinterModel *printer = modelFor(model);
+    if (printer && printer->headDots == 560)
+        return 0;
     return DefaultCutterFeedMm;
 }
 

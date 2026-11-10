@@ -354,8 +354,12 @@ void testCutterFeed()
 {
     qunsetenv("PTOUCH_CUTTER_FEED_MM");
     check(cutterFeedMm(QStringLiteral("PT-P710BT")) == 5, "5 mm cutter feed by default");
+    check(cutterFeedMm(QString()) == 5, "and for an unknown model");
+    check(cutterFeedMm(QStringLiteral("PT-P950NW")) == 0, "none for the PT-P900 series");
     qputenv("PTOUCH_CUTTER_FEED_MM", "0");
-    check(cutterFeedMm(QStringLiteral("PT-P950NW")) == 0, "the environment can switch it off");
+    check(cutterFeedMm(QStringLiteral("PT-P710BT")) == 0, "the environment can switch it off");
+    qputenv("PTOUCH_CUTTER_FEED_MM", "3");
+    check(cutterFeedMm(QStringLiteral("PT-P950NW")) == 3, "or on");
     qputenv("PTOUCH_CUTTER_FEED_MM", "99");
     check(cutterFeedMm(QString()) == 5, "a value the driver does not offer is ignored");
     qputenv("PTOUCH_CUTTER_FEED_MM", "abc");

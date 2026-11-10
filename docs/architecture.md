@@ -137,8 +137,11 @@ missing at 0 mm and complete at 5 mm.
 
 `ExtraMargin` sets what the driver calls the top and bottom margin, so it applies
 to both ends: a label laid out at 63.5 mm with no side margin left a PT-P950NW
-73.5 mm long. Whether that machine needs the feed at all is not yet established;
-`PTOUCH_CUTTER_FEED_MM=0` (0 to 27) overrides the amount for finding out. Measured on a PT-P710BT with a 3 mm side margin in the layout: 6 mm
+73.5 mm long. That machine does not need the feed: framed labels printed on it
+with `ExtraMargin=0mm` came out complete at both ends and as long as laid out (60
+and 50 mm, on 24 and 36 mm tape), so `cutterFeedMm()` returns 0 for the PT-P900
+series. `PTOUCH_CUTTER_FEED_MM` (0 to 27) overrides the amount for finding out what
+another model needs. Measured on a PT-P710BT with a 3 mm side margin in the layout: 6 mm
 from the cut to the frame at the front, 5 mm at the back. The remaining
 millimetre is the accuracy of the cut itself and not worth chasing.
 
