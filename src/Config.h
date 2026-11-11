@@ -27,6 +27,11 @@ QString findPtouchQueue();
 QString queueHost(const QString &queue);
 QString hostFromDeviceUri(const QString &uri);
 
+// P-touch model a queue was set up for, from its make-and-model entry; empty for
+// other printers. Known even while the printer is switched off.
+QString queueModel(const QString &queue);
+QString modelFromQueueOptions(const QString &lpoptionsOutput);
+
 // Values from /etc/ptouch-studio/rfcomm.conf, written by the system setup.
 QString systemConfValue(const QString &key);
 

@@ -121,6 +121,11 @@ there, that is where the status is asked for — even if the same machine is plu
 in over USB as well. Asking for the model first keeps other makes of network
 printer out of it; to the status OID they answer `noSuchName`.
 
+These printers switch themselves off after a few idle hours and then answer
+nothing at all. The queue still names its model (`printer-make-and-model`), so
+the device stays `snmp://host` and the status reads "does not answer — printer
+switched on?" instead of falling back to a Bluetooth port that was never set up.
+
 Verified on a PT-P950NW with 24 and 36 mm tape over Ethernet. Not yet handled:
 the job counts as printed when CUPS has delivered it, while the printer is still
 feeding and cutting — the wait the `rfcomm:` backend does is missing on this link.

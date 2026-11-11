@@ -330,6 +330,18 @@ void testNetworkDevice()
           "a USB queue has no host");
     check(hostFromDeviceUri(QStringLiteral("rfcomm:/dev/rfcomm0")).isEmpty(),
           "neither has the Bluetooth backend");
+
+    // A printer that is switched off cannot name itself; its queue still does.
+    check(modelFromQueueOptions(QStringLiteral(
+              "copies=1 device-uri=socket://192.168.1.50:9100 "
+              "printer-make-and-model='Brother PT-P950NW Foomatic/ptouch-pt (recommended)' "
+              "printer-type=2101380")) == QStringLiteral("PT-P950NW"),
+          "model taken from the queue's make-and-model");
+    check(modelFromQueueOptions(QStringLiteral(
+              "printer-make-and-model='HP LaserJet 500 color M551 Postscript'")).isEmpty(),
+          "another make of printer has no P-touch model");
+    check(modelFromQueueOptions(QStringLiteral("copies=1 finishings=3")).isEmpty(),
+          "neither has a queue without the entry");
 }
 
 void testWideHeadModels()

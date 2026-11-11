@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "Provision.h"
 #include "Status.h"
 
 #include <QDir>
@@ -86,6 +87,24 @@ QString queueHost(const QString &queue)
     return hostFromDeviceUri(out.section(QLatin1Char(' '), -1));
 }
 
+QString modelFromQueueOptions(const QString &options)
+{
+    // lpoptions prints "… printer-make-and-model='Brother PT-P950NW Foomatic/ptouch-pt' …"
+    static const QRegularExpression re(QStringLiteral("printer-make-and-model='([^']*)'"));
+    const QString make = re.match(options).captured(1);
+    if (!make.contains(QStringLiteral("Brother"), Qt::CaseInsensitive))
+        return {};
+    return modelFromName(make);
+}
+
+QString queueModel(const QString &queue)
+{
+    if (queue.isEmpty())
+        return {};
+    return modelFromQueueOptions(runCommand(QStringLiteral("lpoptions"),
+                                            {QStringLiteral("-p"), queue}));
+}
+
 Config Config::load()
 {
     Config c;
@@ -118,6 +137,7 @@ Config Config::load()
 
     // USB device numbers move when the printer is replugged or restarted, so a
     // stale path in the configuration should not stop us finding the machine.
+    bool askedForModel = false;
     if (!isNetworkDevice(c.device) && !QFileInfo::exists(c.device)) {
         // Ask for the status over the link the jobs travel on. A queue that prints
         // to a host belongs to a printer on the network, and that printer answers
@@ -125,7 +145,17 @@ Config Config::load()
         // its node may not be accessible. Asking for the model first keeps other
         // makes of network printer out of it.
         const QString host = queueHost(c.printer);
-        const QString model = host.isEmpty() ? QString() : networkPrinterModel(host);
+        QString model;
+        if (!host.isEmpty()) {
+            model = networkPrinterModel(host);
+            askedForModel = true;
+            // A printer that is switched off (they power down by themselves) says
+            // nothing. Its queue still names it, and it stays a network printer:
+            // falling back to a Bluetooth port would only report a setup that
+            // was never meant to exist.
+            if (model.isEmpty())
+                model = queueModel(c.printer);
+        }
         if (!model.isEmpty()) {
             c.device = networkDevice(host);
             if (c.model.isEmpty())
@@ -137,9 +167,13 @@ Config Config::load()
         }
     }
     // The model decides how much of the tape the head reaches; on the network it
-    // is one question away.
-    if (c.model.isEmpty() && isNetworkDevice(c.device))
-        c.model = networkPrinterModel(networkHost(c.device));
+    // is one question away, and the queue knows it while the printer is off.
+    if (c.model.isEmpty() && isNetworkDevice(c.device)) {
+        if (!askedForModel)
+            c.model = networkPrinterModel(networkHost(c.device));
+        if (c.model.isEmpty())
+            c.model = queueModel(c.printer);
+    }
     return c;
 }
 
