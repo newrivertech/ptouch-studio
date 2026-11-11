@@ -83,6 +83,7 @@ struct Spec {
     bool frame = false;
     bool mirror = false;
     bool autocut = true;
+    bool cutEach = false;   // cut between the labels of a run, not only at its end
     int copies = 1;
     QString model;     // empty means "assume a 128 dot, 180 dpi head"
 
@@ -143,5 +144,7 @@ QImage renderToImage(const Spec &spec, const Layout &layout, int dpi);
 // Writes a PDF whose page size matches the label exactly; returns it in points.
 struct PageSize { int widthPt; int heightPt; };
 PageSize writePdf(const QString &path, const Spec &spec, const Layout &layout);
+// Several labels as the pages of one document, all of the longest label's size.
+PageSize writePdf(const QString &path, const QList<Spec> &specs, const QList<Layout> &layouts);
 
 } // namespace ptouch

@@ -475,8 +475,18 @@ void paintLabel(QPainter &painter, const Spec &spec, const Layout &layout, int d
 
 PageSize writePdf(const QString &path, const Spec &spec, const Layout &layout)
 {
-    const double wPt = spec.pagePt();
-    const double hPt = layout.lengthPt;
+    return writePdf(path, QList<Spec>{spec}, QList<Layout>{layout});
+}
+
+PageSize writePdf(const QString &path, const QList<Spec> &specs, const QList<Layout> &layouts)
+{
+    if (specs.isEmpty() || specs.size() != layouts.size())
+        return {0, 0};
+    // One page size for the whole job: the longest label sets it.
+    const double wPt = specs.first().pagePt();
+    double hPt = 0;
+    for (const Layout &layout : layouts)
+        hPt = std::max(hPt, layout.lengthPt);
 
     QPdfWriter writer(path);
     writer.setResolution(600);
@@ -486,14 +496,22 @@ PageSize writePdf(const QString &path, const Spec &spec, const Layout &layout)
 
     QPainter p(&writer);
     const double s = writer.resolution() / 72.0;
-    p.scale(s, s);
-    p.translate(wPt, 0);          // the tape runs across the page direction
-    p.rotate(90);
-    if (spec.mirror) {
-        p.translate(layout.lengthPt, 0);
-        p.scale(-1, 1);
+    for (int i = 0; i < specs.size(); ++i) {
+        const Spec &spec = specs.at(i);
+        const Layout &layout = layouts.at(i);
+        if (i > 0)
+            writer.newPage();
+        p.save();
+        p.scale(s, s);
+        p.translate(wPt, 0);          // the tape runs across the page direction
+        p.rotate(90);
+        if (spec.mirror) {
+            p.translate(layout.lengthPt, 0);
+            p.scale(-1, 1);
+        }
+        paintLabel(p, spec, layout, writer.resolution());
+        p.restore();
     }
-    paintLabel(p, spec, layout, writer.resolution());
     p.end();
 
     return {int(qRound(wPt)), int(qRound(hPt))};

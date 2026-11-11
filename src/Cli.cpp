@@ -1,4 +1,5 @@
 #include "Cli.h"
+#include "Batch.h"
 
 #include "Config.h"
 #include "Engine.h"
@@ -134,6 +135,21 @@ int cmdPrint(const QStringList &args)
                  QStringLiteral("one label per line of this file; \"|\" splits lines "
                                 "within a label"),
                  QStringLiteral("file")});
+    p.addOption({QStringLiteral("data"),
+                 QStringLiteral("one label per row of this table (CSV with a header row, "
+                                "or JSON); \"-\" reads standard input. The text names "
+                                "the columns as {column}"),
+                 QStringLiteral("file")});
+    p.addOption({QStringLiteral("count"),
+                 QStringLiteral("number of labels in a run; {n} counts them, "
+                                "{date} and {time} are filled in as well"),
+                 QStringLiteral("labels")});
+    p.addOption({QStringLiteral("start"), QStringLiteral("first value of {n}"),
+                 QStringLiteral("number"), QStringLiteral("1")});
+    p.addOption({QStringLiteral("step"), QStringLiteral("what {n} grows by per label"),
+                 QStringLiteral("number"), QStringLiteral("1")});
+    p.addOption({QStringLiteral("cut-each"),
+                 QStringLiteral("cut after every label of a run instead of once at its end")});
     p.addOption({QStringLiteral("pdf"), QStringLiteral("write a PDF instead of printing"),
                  QStringLiteral("file")});
     p.addHelpOption();
@@ -162,7 +178,50 @@ int cmdPrint(const QStringList &args)
     spec.frame = p.isSet(QStringLiteral("frame"));
     spec.mirror = p.isSet(QStringLiteral("mirror"));
     spec.autocut = !p.isSet(QStringLiteral("no-cut"));
+    spec.cutEach = p.isSet(QStringLiteral("cut-each"));
     spec.model = cfg.model;
+
+    // Read the table before asking the printer anything: a typo in a file name
+    // should not cost a network round trip first.
+    DataSet data;
+    if (p.isSet(QStringLiteral("data"))) {
+        if (p.isSet(QStringLiteral("from-file"))) {
+            err() << QStringLiteral("--data and --from-file do not go together.") << Qt::endl;
+            return 2;
+        }
+        const QString source = p.value(QStringLiteral("data"));
+        QFile file(source);
+        const bool opened = source == QLatin1String("-")
+                                ? file.open(stdin, QIODevice::ReadOnly)
+                                : file.open(QIODevice::ReadOnly);
+        if (!opened) {
+            err() << QStringLiteral("cannot read %1").arg(source) << Qt::endl;
+            return 1;
+        }
+        data = parseData(file.readAll());
+        if (!data.error.isEmpty()) {
+            err() << QStringLiteral("%1: %2")
+                         .arg(source == QLatin1String("-") ? QStringLiteral("standard input")
+                                                           : source,
+                              data.error) << Qt::endl;
+            return 1;
+        }
+    }
+    RunOptions run;
+    bool numbersOk = true, ok = true;
+    run.start = p.value(QStringLiteral("start")).toLongLong(&ok);
+    numbersOk &= ok;
+    run.step = p.value(QStringLiteral("step")).toLongLong(&ok);
+    numbersOk &= ok;
+    if (p.isSet(QStringLiteral("count"))) {
+        run.count = p.value(QStringLiteral("count")).toInt(&ok);
+        numbersOk &= ok && run.count > 0;
+    }
+    if (!numbersOk) {
+        err() << QStringLiteral("--count, --start and --step take whole numbers; "
+                                "--count at least 1.") << Qt::endl;
+        return 2;
+    }
 
     spec.picturePath = p.value(QStringLiteral("image"));
     if (p.isSet(QStringLiteral("qr"))) {
@@ -249,31 +308,36 @@ int cmdPrint(const QStringList &args)
         return failed == 0 ? 0 : 1;
     }
 
-    const Layout layout = computeLayout(spec);
-    for (const QString &w : layout.warnings)
+    const Batch batch = buildBatch(spec, data, run);
+    for (const QString &w : batch.warnings)
         err() << QStringLiteral("Note: ") << w << Qt::endl;
+    if (!batch.errors.isEmpty()) {
+        for (const QString &e : batch.errors)
+            err() << e << Qt::endl;
+        return 1;
+    }
+    const Layout &layout = batch.layouts.first();
+    const QString size = QStringLiteral("%1 × %2 mm, font %3 pt")
+                             .arg(batch.lengthPt() / PtPerMm, 0, 'f', 0)
+                             .arg(width, 0, 'g', 3)
+                             .arg(layout.sizePt, 0, 'f', 1);
+    const QString each = batch.size() > 1
+                             ? QStringLiteral("%1 labels, each %2").arg(batch.size()).arg(size)
+                             : size;
 
     if (p.isSet(QStringLiteral("pdf"))) {
         const QString path = p.value(QStringLiteral("pdf"));
-        writePdf(path, spec, layout);
-        out() << QStringLiteral("%1: %2 × %3 mm, font %4 pt")
-                     .arg(path)
-                     .arg(layout.lengthPt / PtPerMm, 0, 'f', 0)
-                     .arg(width, 0, 'g', 3)
-                     .arg(layout.sizePt, 0, 'f', 1) << Qt::endl;
+        writePdf(path, batch.specs, batch.layouts);
+        out() << QStringLiteral("%1: %2").arg(path, each) << Qt::endl;
         return 0;
     }
 
-    const PrintResult r = printAndWait(spec, layout, cfg.printer);
+    const PrintResult r = printAndWait(batch.specs, batch.layouts, cfg.printer);
     if (!r.ok) {
         err() << r.message << Qt::endl;
         return 1;
     }
-    out() << QStringLiteral("%1 — %2 × %3 mm, font %4 pt")
-                 .arg(r.message)
-                 .arg(layout.lengthPt / PtPerMm, 0, 'f', 0)
-                 .arg(width, 0, 'g', 3)
-                 .arg(layout.sizePt, 0, 'f', 1) << Qt::endl;
+    out() << QStringLiteral("%1 — %2").arg(r.message, each) << Qt::endl;
     return 0;
 }
 

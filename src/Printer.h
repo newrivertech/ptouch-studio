@@ -19,6 +19,8 @@ public:
     explicit PrintJob(QObject *parent = nullptr);
 
     void start(const Spec &spec, const Layout &layout, const QString &printer);
+    // A run of labels as one job; all layouts share one length (see Batch.h).
+    void start(const QList<Spec> &specs, const QList<Layout> &layouts, const QString &printer);
     bool running() const { return m_timer.isActive(); }
 
 signals:
@@ -45,5 +47,7 @@ struct PrintResult {
 };
 PrintResult printAndWait(const Spec &spec, const Layout &layout, const QString &printer,
                          int timeoutSeconds = 180);
+PrintResult printAndWait(const QList<Spec> &specs, const QList<Layout> &layouts,
+                         const QString &printer, int timeoutSeconds = 180);
 
 } // namespace ptouch

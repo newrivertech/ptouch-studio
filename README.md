@@ -148,6 +148,40 @@ ptouch-studio status --json                # for scripts
 
 `ptouch-studio print --help` lists every layout option.
 
+### Runs of labels: counters, dates, data from other software
+
+The text may hold fields in braces. A run fills them once per label and sends all
+labels as one job, so the tape is fed and cut once at the end (`--cut-each` cuts
+after every label instead).
+
+```bash
+ptouch-studio print --count 20 "Rack {n:03}"                 # Rack 001 … Rack 020
+ptouch-studio print --count 5 --start 100 --step 10 "{n}"    # 100, 110, … 140
+ptouch-studio print "Tested {date}" "{time}"                 # today, now
+ptouch-studio print "Due {date:%d.%m.%Y}"                    # strftime or Qt format
+
+ptouch-studio print --data assets.csv "{name}" "{asset id}"  # one label per row
+ptouch-studio print --data assets.csv --qr "{asset id}" "{name}"
+sqlite3 -csv -header stock.db "select name, bin from parts" \
+    | ptouch-studio print --data - "{name}" "Bin {bin}"       # straight from a database
+jq -c '.devices[]' inventory.json | ptouch-studio print --data - "{hostname}"
+```
+
+| Field | Filled with |
+|---|---|
+| `{n}`, `{n:03}` | the counter (`--start`, `--step`), padded to a width if one is given |
+| `{date}`, `{date:FORMAT}` | today; ISO (`2026-11-10`) unless a strftime or Qt format follows |
+| `{time}`, `{time:FORMAT}` | now, `HH:mm` by default |
+| `{column}` | that column of the `--data` table, matched regardless of case |
+| `{{`, `}}` | literal braces |
+
+`--data` takes CSV with a header row (comma, semicolon or tab separated) or JSON
+(an array of objects, or one object per line); `-` reads standard input, which is
+how spreadsheets, databases and other programs hand their rows over. A field the
+table does not have stops the run before anything is printed. Every label of a run
+is as long as its longest one. `--pdf` writes the whole run, one page per label,
+to look at first.
+
 ## Supported devices
 
 Developed and verified with the **PT-P710BT** (P-touch Cube Plus) over Bluetooth.

@@ -64,15 +64,15 @@ QString parseJobId(const QString &output)
 // cutter, so cutting per label can waste more tape than the labels use.
 QStringList lpArguments(const Spec &spec, const PageSize &page,
                         const QString &printer, const QString &pdfPath,
-                        int copies)
+                        int copies, int pages = 1)
 {
-    const int sheets = std::max(1, copies);
+    const int sheets = std::max(1, copies) * std::max(1, pages);
     // A single label has no "between" to cut; a run of copies stays joined and
-    // is severed once, when the job ends.
-    const bool cutBetween = spec.autocut && sheets == 1;
+    // is severed once, when the job ends — unless separate labels were asked for.
+    const bool cutBetween = spec.autocut && (sheets == 1 || spec.cutEach);
     // Mirroring is already baked into the PDF so the preview stays truthful.
     return {QStringLiteral("-d"), printer,
-            QStringLiteral("-n"), QString::number(sheets),
+            QStringLiteral("-n"), QString::number(std::max(1, copies)),
             QStringLiteral("-o"), QStringLiteral("PageSize=Custom.%1x%2")
                                       .arg(page.widthPt).arg(page.heightPt),
             QStringLiteral("-o"), QStringLiteral("MirrorPrint=False"),
@@ -130,19 +130,27 @@ PrintJob::PrintJob(QObject *parent) : QObject(parent)
 
 void PrintJob::start(const Spec &spec, const Layout &layout, const QString &printer)
 {
-    if (running())
+    start(QList<Spec>{spec}, QList<Layout>{layout}, printer);
+}
+
+void PrintJob::start(const QList<Spec> &specs, const QList<Layout> &layouts,
+                     const QString &printer)
+{
+    if (running() || specs.isEmpty())
         return;
+    const Spec &spec = specs.first();
+    const int pages = int(specs.size());
     if (printer.isEmpty()) {
         emit finished(false, QStringLiteral("No print queue configured."));
         return;
     }
 
     m_printer = printer;
-    m_copies = std::max(1, spec.copies);
+    m_copies = std::max(1, spec.copies) * pages;   // labels leaving the printer
     m_elapsed = 0;
     m_pdfPath = tempPdfPath();
 
-    const PageSize page = writePdf(m_pdfPath, spec, layout);
+    const PageSize page = writePdf(m_pdfPath, specs, layouts);
 
     log::section(QStringLiteral("print job"));
     log::field(QStringLiteral("queue"), printer);
@@ -153,7 +161,7 @@ void PrintJob::start(const Spec &spec, const Layout &layout, const QString &prin
                QStringLiteral("%1 x %2 pt").arg(page.widthPt).arg(page.heightPt));
     log::field(QStringLiteral("pdf"),
                QStringLiteral("%1 (%2 bytes)").arg(m_pdfPath).arg(QFileInfo(m_pdfPath).size()));
-    const QStringList args = lpArguments(spec, page, printer, m_pdfPath, m_copies);
+    const QStringList args = lpArguments(spec, page, printer, m_pdfPath, spec.copies, pages);
     log::field(QStringLiteral("lp"), args.join(QLatin1Char(' ')));
 
     emit progress(QStringLiteral("Submitting job …"));
@@ -215,8 +223,19 @@ void PrintJob::done(bool ok, const QString &message)
 PrintResult printAndWait(const Spec &spec, const Layout &layout, const QString &printer,
                          int timeoutSeconds)
 {
+    return printAndWait(QList<Spec>{spec}, QList<Layout>{layout}, printer, timeoutSeconds);
+}
+
+PrintResult printAndWait(const QList<Spec> &specs, const QList<Layout> &layouts,
+                         const QString &printer, int timeoutSeconds)
+{
     PrintResult result;
-    result.lengthPt = int(qRound(layout.lengthPt));
+    if (specs.isEmpty() || specs.size() != layouts.size()) {
+        result.message = QStringLiteral("Nothing to print.");
+        return result;
+    }
+    const Spec &spec = specs.first();
+    const int pages = int(specs.size());
 
     if (printer.isEmpty()) {
         result.message = QStringLiteral("No print queue configured. "
@@ -225,10 +244,11 @@ PrintResult printAndWait(const Spec &spec, const Layout &layout, const QString &
     }
 
     const QString pdf = tempPdfPath();
-    const PageSize page = writePdf(pdf, spec, layout);
+    const PageSize page = writePdf(pdf, specs, layouts);
+    result.lengthPt = page.heightPt;
 
     const int copies = std::max(1, spec.copies);
-    const QStringList args = lpArguments(spec, page, printer, pdf, copies);
+    const QStringList args = lpArguments(spec, page, printer, pdf, copies, pages);
     log::section(QStringLiteral("print job (cli)"));
     log::field(QStringLiteral("queue"), printer);
     log::field(QStringLiteral("page size"),
@@ -269,8 +289,8 @@ PrintResult printAndWait(const Spec &spec, const Layout &layout, const QString &
     }
 
     result.ok = true;
-    result.message = spec.copies > 1
-                         ? QStringLiteral("%1 labels printed").arg(spec.copies)
+    result.message = copies * pages > 1
+                         ? QStringLiteral("%1 labels printed").arg(copies * pages)
                          : QStringLiteral("label printed");
     log::field(QStringLiteral("result"), QStringLiteral("ok — ") + result.message);
     return result;

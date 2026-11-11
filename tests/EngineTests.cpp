@@ -4,6 +4,7 @@
 // the coordinate system on top of that (600 dpi PDF) makes the text come out DPI/72
 // too large while every other measurement looks right. So this does not merely do
 // arithmetic — it rasterises the produced PDF and measures the ink.
+#include "Batch.h"
 #include "Config.h"
 #include "Engine.h"
 #include "Snmp.h"
@@ -12,6 +13,7 @@
 #include <QGuiApplication>
 #include <QImage>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QTemporaryDir>
 
 #include <cmath>
@@ -379,6 +381,148 @@ void testCutterFeed()
     qunsetenv("PTOUCH_CUTTER_FEED_MM");
 }
 
+void testTemplates()
+{
+    const QDateTime now(QDate(2026, 11, 10), QTime(9, 5, 7));
+    const Row row{{QStringLiteral("name"), QStringLiteral("Switch A")},
+                  {QStringLiteral("Asset ID"), QStringLiteral("NR-7")}};
+    const auto fill = [&](const char *text, QStringList *unknown = nullptr) {
+        return expandTemplate(QString::fromUtf8(text), row, 7, now, unknown);
+    };
+    check(fill("Rack {n}") == QStringLiteral("Rack 7"), "{n} is the counter");
+    check(fill("{n:03}") == QStringLiteral("007"), "padded with zeros to a width");
+    check(fill("{n:3}|") == QStringLiteral("  7|"), "or with blanks");
+    check(fill("{date}") == QStringLiteral("2026-11-10"), "{date} is ISO by default");
+    check(fill("{date:%d.%m.%Y}") == QStringLiteral("10.11.2026"), "strftime formats work");
+    check(fill("{date:yyyy/MM}") == QStringLiteral("2026/11"), "and so do Qt formats");
+    check(fill("{time}") == QStringLiteral("09:05"), "{time} is hours and minutes");
+    check(fill("{time:%H:%M:%S}") == QStringLiteral("09:05:07"), "seconds on request");
+    check(fill("{name} / {Asset ID}") == QStringLiteral("Switch A / NR-7"),
+          "columns are filled by name, blanks in the name included");
+    check(fill("{NAME} {asset id}") == QStringLiteral("Switch A NR-7"), "whatever the case");
+    check(fill("{{n}} {n}") == QStringLiteral("{n} 7"), "doubled braces are literal");
+    check(fill("a { b } c {") == QStringLiteral("a { b } c {"), "stray braces survive");
+
+    QStringList unknown;
+    check(fill("{nmae} {n}", &unknown) == QStringLiteral("{nmae} 7"),
+          "an unknown field stays as written");
+    check(unknown == QStringList{QStringLiteral("nmae")}, "and is reported");
+
+    const Row shadow{{QStringLiteral("n"), QStringLiteral("column")},
+                     {QStringLiteral("date"), QStringLiteral("someday")}};
+    check(expandTemplate(QStringLiteral("{n} {date}"), shadow, 7, now) == QStringLiteral("column someday"),
+          "a column wins over a built-in of the same name");
+}
+
+void testDataParsing()
+{
+    const DataSet csv = parseData(QByteArrayLiteral(
+        "\xEF\xBB\xBFname,asset id,room\r\n"
+        "Switch A,NR-0007,\"Rack 2, U14\"\r\n"
+        "\r\n"
+        "AP,NR-9,\"He said \"\"hi\"\"\nsecond line\"\n"));
+    check(csv.error.isEmpty(), "CSV is read");
+    check(csv.fields == QStringList({QStringLiteral("name"), QStringLiteral("asset id"),
+                                     QStringLiteral("room")}),
+          "the header names the fields, byte order mark aside");
+    check(csv.rows.size() == 2, "blank lines are no labels");
+    check(csv.rows.value(0).value(QStringLiteral("room")) == QStringLiteral("Rack 2, U14"),
+          "quoted cells keep their commas");
+    check(csv.rows.value(1).value(QStringLiteral("room")) == QStringLiteral("He said \"hi\"\nsecond line"),
+          "and their quotes and line breaks");
+
+    const DataSet semicolon = parseData(QByteArrayLiteral("a;b\n1,5;2\n"));
+    check(semicolon.rows.value(0).value(QStringLiteral("a")) == QStringLiteral("1,5"),
+          "semicolon-separated files are recognised");
+    const DataSet tabs = parseData(QByteArrayLiteral("a\tb\nx\ty\n"));
+    check(tabs.rows.value(0).value(QStringLiteral("b")) == QStringLiteral("y"), "so are tabs");
+    check(!parseData(QByteArrayLiteral("a,b\n")).error.isEmpty(), "a header alone is an error");
+    check(!parseData(QByteArray()).error.isEmpty(), "and so is nothing at all");
+
+    const DataSet array = parseData(QByteArrayLiteral(
+        "[{\"name\":\"alpha\",\"port\":1},{\"name\":\"beta\",\"port\":2.5,\"up\":true}]"));
+    check(array.rows.size() == 2, "a JSON array gives one label per object");
+    check(array.rows.value(0).value(QStringLiteral("port")) == QStringLiteral("1"),
+          "whole numbers stay whole");
+    check(array.rows.value(1).value(QStringLiteral("port")) == QStringLiteral("2.5")
+              && array.rows.value(1).value(QStringLiteral("up")) == QStringLiteral("true"),
+          "fractions and booleans are written out");
+    const DataSet lines = parseData(QByteArrayLiteral("{\"a\":\"x\"}\n\n{\"a\":\"y\"}\n"));
+    check(lines.rows.size() == 2 && lines.rows.value(1).value(QStringLiteral("a")) == QStringLiteral("y"),
+          "one JSON object per line works too");
+    check(!parseData(QByteArrayLiteral("[1,2]")).error.isEmpty(), "a list of numbers is refused");
+    check(!parseData(QByteArrayLiteral("{\"a\":1}\n{oops\n")).error.isEmpty(),
+          "and broken JSON names its line");
+}
+
+void testBatch(const QString &workDir)
+{
+    Spec spec;
+    spec.tapeMm = 12;
+    spec.autoSize = false;
+    spec.sizePt = 10;
+    spec.text = QStringLiteral("No. {n}");
+    RunOptions run;
+    run.start = 8;
+    run.count = 4;                       // 8, 9, 10, 11
+    Batch batch = buildBatch(spec, DataSet(), run);
+    check(batch.size() == 4 && batch.errors.isEmpty(), "a count makes that many labels");
+    check(batch.specs.value(0).text == QStringLiteral("No. 8")
+              && batch.specs.value(3).text == QStringLiteral("No. 11"),
+          "numbered from the start value");
+    bool same = true;
+    for (const Layout &l : std::as_const(batch.layouts))
+        same &= std::abs(l.lengthPt - batch.lengthPt()) < 0.01 && !l.overflow;
+    check(same, "all labels of a run share one length");
+    const double alone = computeLayout(batch.specs.value(3)).lengthPt;
+    Spec shortOne = spec;
+    shortOne.text = QStringLiteral("No. 8");
+    check(batch.lengthPt() > computeLayout(shortOne).lengthPt
+              && std::abs(batch.lengthPt() - alone) < 0.01,
+          "the longest label sets it");
+
+    run.step = -2;
+    check(buildBatch(spec, DataSet(), run).specs.value(1).text == QStringLiteral("No. 6"),
+          "the step may count down");
+
+    const QString path = workDir + QStringLiteral("/run.pdf");
+    const PageSize page = writePdf(path, batch.specs, batch.layouts);
+    QProcess info;
+    info.start(QStringLiteral("pdfinfo"), {path});
+    if (info.waitForFinished(5000) && info.exitCode() == 0) {
+        const QString out = QString::fromLocal8Bit(info.readAllStandardOutput());
+        check(out.contains(QRegularExpression(QStringLiteral("Pages:\\s+4\\b"))),
+              "the PDF has one page per label");
+    }
+    check(page.widthPt == 34 && page.heightPt == int(qRound(batch.lengthPt())),
+          "sized like the tape and the longest label");
+
+    DataSet data = parseData(QByteArrayLiteral("name,id\nSwitch A,NR-7\nB,NR-10\n"));
+    spec.text = QStringLiteral("{name}\n{id} #{n}");
+    spec.codeType = CodeType::Code128;
+    spec.codeData = QStringLiteral("{id}");
+    spec.copies = 2;
+    batch = buildBatch(spec, data, RunOptions());
+    check(batch.size() == 4, "copies of a run repeat each label");
+    check(batch.specs.value(0).text == QStringLiteral("Switch A\nNR-7 #1")
+              && batch.specs.value(1).text == batch.specs.value(0).text
+              && batch.specs.value(2).text == QStringLiteral("B\nNR-10 #2"),
+          "label by label, rows numbered in order");
+    check(batch.specs.value(2).codeData == QStringLiteral("NR-10"), "codes take fields as well");
+
+    RunOptions firstOnly;
+    firstOnly.count = 1;
+    spec.copies = 1;
+    check(buildBatch(spec, data, firstOnly).size() == 1, "a count limits the rows used");
+
+    spec.text = QStringLiteral("{nmae}");
+    batch = buildBatch(spec, data, RunOptions());
+    check(!batch.errors.isEmpty() && batch.errors.first().contains(QStringLiteral("nmae")),
+          "a column the data does not have is an error");
+    check(buildBatch(spec, DataSet(), RunOptions()).errors.isEmpty(),
+          "without data the braces are just text");
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -400,6 +544,9 @@ int main(int argc, char *argv[])
     testNetworkDevice();
     testWideHeadModels();
     testCutterFeed();
+    testTemplates();
+    testDataParsing();
+    testBatch(dir.path());
 
     std::printf("\n%s\n", failures == 0 ? "all checks passed"
                                         : qPrintable(QStringLiteral("%1 check(s) failed").arg(failures)));

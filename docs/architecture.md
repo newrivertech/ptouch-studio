@@ -5,6 +5,7 @@
 | File | Purpose |
 |---|---|
 | `src/Engine.*` | tape table, text layout, drawing, PDF output |
+| `src/Batch.*` | runs of labels: fields in the text, CSV/JSON tables, one job for all |
 | `src/Status.*` | status query over RFCOMM, USB or the network, decoding of the 32 status bytes |
 | `src/Snmp.*` | one SNMPv1 GET, encoded and decoded by hand |
 | `src/Printer.*` | handing jobs to CUPS and following them to the end |
@@ -33,6 +34,19 @@ Spec ──computeLayout──> Layout ──render──> QPainter
 `Spec` describes the desired label, `Layout` the result of the calculation (font
 size, length, baselines). Together they are enough to draw — which output device
 receives it makes no difference.
+
+## Runs of labels
+
+`buildBatch()` turns one `Spec` with fields in its text (`{n}`, `{date}`,
+`{column}`) into a list of filled-in `Spec`s and their `Layout`s — from a counter
+or from the rows of a CSV/JSON table. The list becomes the pages of a single PDF
+and a single CUPS job: every job ends with a feed and a cut, so a job per label
+would waste tape between all of them. One job has one page size, which is why
+every label of a run is laid out again at the length of the longest.
+
+The table comes from a file or from standard input. That pipe is the whole
+integration surface; the application knows nothing about spreadsheets or
+databases, and anything that can write CSV or JSON can print labels.
 
 ## Geometry
 
