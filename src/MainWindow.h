@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QPointer>
 
+#include "Batch.h"
 #include "Config.h"
 #include "Engine.h"
 #include "Printer.h"
@@ -54,6 +55,8 @@ private slots:
     void openSetup();
     void insertSymbol();
     void saveDiagnostics();
+    void importData();
+    void clearData();
 
 private:
     QWidget *buildControls();
@@ -68,8 +71,10 @@ private:
     QMenu *m_templateMenu = nullptr;
 
     Config m_config;
-    Spec m_spec;
+    Spec m_spec;        // the label on show: one of the run, fields filled in
     Layout m_layout;
+    Batch m_batch;      // every label Print will send
+    DataSet m_data;     // imported table, empty when there is none
 
     PreviewWidget *m_preview = nullptr;
     QPlainTextEdit *m_text = nullptr;
@@ -91,6 +96,13 @@ private:
     QCheckBox *m_mirror = nullptr;
     QCheckBox *m_cut = nullptr;
     QSpinBox *m_copies = nullptr;
+    QSpinBox *m_runCount = nullptr;
+    QSpinBox *m_runStart = nullptr;
+    QSpinBox *m_runStep = nullptr;
+    QCheckBox *m_cutEach = nullptr;
+    QLabel *m_dataInfo = nullptr;
+    QPushButton *m_dataClear = nullptr;
+    QSpinBox *m_previewIndex = nullptr;
     QComboBox *m_artworkKind = nullptr;
     QLineEdit *m_artworkData = nullptr;
     QPushButton *m_artworkBrowse = nullptr;

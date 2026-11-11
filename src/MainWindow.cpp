@@ -17,6 +17,7 @@
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontComboBox>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -30,7 +31,11 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -46,7 +51,10 @@ constexpr int FreshnessMs = 10000;    // how long a tape reading counts as curre
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
 {
     setWindowTitle(QStringLiteral(PTOUCH_APP_NAME));
-    resize(1040, 660);
+    // Tall enough to show every group of controls where the screen allows it.
+    const QScreen *screen = QGuiApplication::primaryScreen();
+    resize(1040, screen ? std::clamp(screen->availableGeometry().height() - 60, 660, 1030)
+                        : 660);
 
     m_config = Config::load();
     m_job = new PrintJob(this);
@@ -358,8 +366,68 @@ QWidget *MainWindow::buildControls()
     labelForm->addRow(tr("Copies"), m_copies);
     v->addWidget(labelGroup);
 
+    // A run: several labels from one text, its fields filled per label.
+    auto *runGroup = new QGroupBox(tr("Run of labels"));
+    auto *runForm = new QFormLayout(runGroup);
+    runGroup->setToolTip(tr("Fields in the text are filled per label: {n} counts, "
+                            "{date} and {time} come from the clock, {column} from "
+                            "imported data."));
+
+    auto *countRow = new QHBoxLayout;
+    m_runCount = new QSpinBox;
+    m_runCount->setRange(1, 999);
+    m_runStart = new QSpinBox;
+    m_runStart->setRange(-999999, 99999999);
+    m_runStart->setValue(1);
+    m_runStep = new QSpinBox;
+    m_runStep->setRange(-9999, 9999);
+    m_runStep->setValue(1);
+    countRow->addWidget(m_runCount);
+    countRow->addWidget(new QLabel(tr("{n} from")));
+    countRow->addWidget(m_runStart, 1);
+    countRow->addWidget(new QLabel(tr("step")));
+    countRow->addWidget(m_runStep);
+    for (QSpinBox *b : {m_runCount, m_runStart, m_runStep})
+        connect(b, &QSpinBox::valueChanged, this, &MainWindow::refresh);
+    runForm->addRow(tr("Labels"), countRow);
+
+    auto *dataRow = new QHBoxLayout;
+    auto *dataImport = new QPushButton(tr("Import …"));
+    m_dataInfo = new QLabel(tr("none"));
+    m_dataInfo->setWordWrap(true);
+    m_dataClear = new QPushButton(tr("Remove"));
+    m_dataClear->setVisible(false);
+    connect(dataImport, &QPushButton::clicked, this, &MainWindow::importData);
+    connect(m_dataClear, &QPushButton::clicked, this, &MainWindow::clearData);
+    dataRow->addWidget(dataImport);
+    dataRow->addWidget(m_dataInfo, 1);
+    dataRow->addWidget(m_dataClear);
+    runForm->addRow(tr("Data"), dataRow);
+
+    m_previewIndex = new QSpinBox;
+    m_previewIndex->setRange(1, 1);
+    m_previewIndex->setEnabled(false);
+    connect(m_previewIndex, &QSpinBox::valueChanged, this, &MainWindow::refresh);
+    runForm->addRow(tr("Show label"), m_previewIndex);
+
+    m_cutEach = new QCheckBox(tr("Cut after every label"));
+    m_cutEach->setToolTip(tr("Otherwise the run stays one strip and is cut once at "
+                             "its end, which wastes the least tape."));
+    connect(m_cutEach, &QCheckBox::toggled, this, &MainWindow::refresh);
+    runForm->addRow(m_cutEach);
+    v->addWidget(runGroup);
+
     v->addStretch(1);
-    return box;
+
+    // The column is taller than a small screen; let it scroll rather than force
+    // the window to that height.
+    auto *scroll = new QScrollArea;
+    scroll->setWidget(box);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFixedWidth(box->width() + scroll->verticalScrollBar()->sizeHint().width());
+    return scroll;
 }
 
 Spec MainWindow::collectSpec() const
@@ -381,6 +449,7 @@ Spec MainWindow::collectSpec() const
     s.mirror = m_mirror->isChecked();
     s.autocut = m_cut->isChecked();
     s.copies = m_copies->value();
+    s.cutEach = m_cutEach->isChecked();
     s.model = m_config.model;   // decides how much of the tape the head reaches
 
     const int kind = m_artworkKind->currentData().toInt();
@@ -398,13 +467,76 @@ void MainWindow::refresh()
 {
     if (m_building)
         return;
-    m_spec = collectSpec();
-    m_size->setEnabled(!m_spec.autoSize);
-    m_length->setEnabled(!m_spec.autoLength);
-    m_layout = computeLayout(m_spec);
-    m_warning->setText(m_layout.warnings.join(tr("  ·  ")));
+    const Spec pattern = collectSpec();
+    m_size->setEnabled(!pattern.autoSize);
+    m_length->setEnabled(!pattern.autoLength);
+
+    // With a table every row is a label; without one the count decides.
+    const bool hasData = !m_data.rows.isEmpty();
+    m_runCount->setEnabled(!hasData);
+    RunOptions run;
+    run.start = m_runStart->value();
+    run.step = m_runStep->value();
+    run.count = hasData ? 0 : m_runCount->value();
+    m_batch = buildBatch(pattern, m_data, run);
+
+    {
+        const QSignalBlocker blocker(m_previewIndex);
+        m_previewIndex->setRange(1, std::max(1, m_batch.size()));
+        m_previewIndex->setSuffix(m_batch.size() > 1 ? tr(" of %1").arg(m_batch.size())
+                                                     : QString());
+        m_previewIndex->setEnabled(m_batch.size() > 1);
+    }
+    const int shown = std::clamp(m_previewIndex->value() - 1, 0, std::max(0, m_batch.size() - 1));
+    m_spec = m_batch.specs.value(shown, pattern);
+    m_layout = m_batch.layouts.value(shown);
+
+    m_warning->setText((m_batch.errors + m_batch.warnings).join(tr("  ·  ")));
     m_preview->setLabel(m_spec, m_layout);
+    if (!m_job->running())
+        m_printButton->setText(m_batch.size() > 1 ? tr("Print %1 labels").arg(m_batch.size())
+                                                  : tr("Print"));
     storeSettings();
+}
+
+void MainWindow::importData()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import data"), QDir::homePath(),
+        tr("Tables (*.csv *.tsv *.txt *.json *.jsonl);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Import data"), tr("Cannot read %1.").arg(path));
+        return;
+    }
+    const DataSet data = parseData(file.readAll());
+    if (!data.error.isEmpty()) {
+        QMessageBox::warning(this, tr("Import data"),
+                             QStringLiteral("%1: %2").arg(QFileInfo(path).fileName(), data.error));
+        return;
+    }
+    m_data = data;
+    QStringList fields;
+    for (const QString &f : std::as_const(m_data.fields))
+        fields << QStringLiteral("{%1}").arg(f);
+    m_dataInfo->setText(tr("%1 — %2 labels. Fields: %3")
+                            .arg(QFileInfo(path).fileName())
+                            .arg(m_data.rows.size())
+                            .arg(fields.join(QStringLiteral(" "))));
+    m_dataClear->setVisible(true);
+    m_previewIndex->setValue(1);
+    refresh();
+}
+
+void MainWindow::clearData()
+{
+    m_data = DataSet();
+    m_dataInfo->setText(tr("none"));
+    m_dataClear->setVisible(false);
+    m_previewIndex->setValue(1);
+    refresh();
 }
 
 void MainWindow::tapeChanged()
@@ -502,7 +634,9 @@ void MainWindow::setBusy(bool busy, const QString &message)
     m_printButton->setEnabled(!busy);
     m_pdfButton->setEnabled(!busy);
     m_progress->setVisible(busy);
-    m_printButton->setText(busy ? tr("Printing …") : tr("Print"));
+    m_printButton->setText(busy ? tr("Printing …")
+                                : m_batch.size() > 1 ? tr("Print %1 labels").arg(m_batch.size())
+                                                     : tr("Print"));
     if (busy && !message.isEmpty())
         statusBar()->showMessage(message);
     else if (!busy)
@@ -513,7 +647,14 @@ void MainWindow::doPrint()
 {
     if (m_job->running())
         return;
-    if (m_layout.overflow
+    if (!m_batch.errors.isEmpty()) {
+        QMessageBox::warning(this, tr("Run of labels"),
+                             m_batch.errors.join(QLatin1Char('\n')));
+        return;
+    }
+    const bool overflow = std::any_of(m_batch.layouts.begin(), m_batch.layouts.end(),
+                                      [](const Layout &l) { return l.overflow; });
+    if (overflow
         && QMessageBox::question(this, tr("Text too long"),
                                  QStringLiteral("The text does not fit the chosen length "
                                                 "and will be cut off.\nPrint anyway?"))
@@ -569,8 +710,20 @@ void MainWindow::confirmAndPrint()
             return;
     }
 
+    // A run commits a lot of tape at once — say how much before it leaves.
+    const int labels = m_batch.size();
+    if (labels > 1
+        && QMessageBox::question(
+               this, tr("Run of labels"),
+               tr("Print %1 labels of %2 mm each — about %3 mm of tape?")
+                   .arg(labels)
+                   .arg(m_batch.lengthPt() / PtPerMm, 0, 'f', 0)
+                   .arg(labels * m_batch.lengthPt() / PtPerMm, 0, 'f', 0))
+               != QMessageBox::Yes)
+        return;
+
     setBusy(true, tr("Submitting job …"));
-    m_job->start(m_spec, m_layout, m_config.printer);
+    m_job->start(m_batch.specs, m_batch.layouts, m_config.printer);
 }
 
 void MainWindow::insertSymbol()
@@ -759,7 +912,7 @@ void MainWindow::savePdf()
         QDir::homePath() + QStringLiteral("/label.pdf"), QStringLiteral("PDF (*.pdf)"));
     if (path.isEmpty())
         return;
-    writePdf(path, m_spec, m_layout);
+    writePdf(path, m_batch.specs, m_batch.layouts);
     statusBar()->showMessage(tr("saved: %1").arg(path), 6000);
 }
 

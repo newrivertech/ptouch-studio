@@ -182,6 +182,11 @@ table does not have stops the run before anything is printed. Every label of a r
 is as long as its longest one. `--pdf` writes the whole run, one page per label,
 to look at first.
 
+The graphical interface has the same under **Run of labels**: the number of labels
+and where `{n}` starts, **Import …** for a CSV or JSON table, and a selector to
+page through the labels in the preview. It asks before a run is printed and names
+the tape it will use.
+
 ## Supported devices
 
 Developed and verified with the **PT-P710BT** (P-touch Cube Plus) over Bluetooth.
